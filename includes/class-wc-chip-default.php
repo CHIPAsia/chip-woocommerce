@@ -45,6 +45,8 @@ class WC_Chip_Gateway extends WC_Payment_Gateway
       $this->enabled = 'no';
     }
 
+    $this->is_advance_checkout = 'yes' === $this->get_option('is-advance-checkout');
+
     add_action(
       'woocommerce_update_options_payment_gateways_' . $this->id,
       array($this, 'process_admin_options')
@@ -57,6 +59,8 @@ class WC_Chip_Gateway extends WC_Payment_Gateway
     );
 
     add_action("woocommerce_api_wc_{$this->id}_gateway", array(&$this, 'handle_callback'));
+
+    add_action('before_woocommerce_pay_form', array( &$this, 'before_woocommerce_pay_form' ), 10, 3 );
   }
 
   public function get_icon()
@@ -248,6 +252,12 @@ class WC_Chip_Gateway extends WC_Payment_Gateway
         ),
         'default'     => '',
       ),
+      'is-advance-checkout' => array(
+        'title'       => __('Advanced Checkout', 'chip-for-woocommerce'),
+        'type'        => 'checkbox',
+        'label'       => __('Tick this checkbox if you are using any advanced checkout plugin', 'chip-for-woocommerce'),
+        'description' => __('Add compatibility for advanced checkout plugin. eg: WooCommerce Fast Cart', 'chip-for-woocommerce'),
+      ),
       'debug' => array(
         'title'       => __('Debug Log', 'chip-for-woocommerce'),
         'type'        => 'checkbox',
@@ -403,6 +413,15 @@ class WC_Chip_Gateway extends WC_Payment_Gateway
     if ($this->hid == 'yes') {
       $checkout_url .= '?preferred=' . $this->get_payment_method_redirect();
     }
+
+    if ( $this->is_advance_checkout && !is_checkout_pay_page() ) {
+      WC()->session->set('chip_checkout_url_' . $order_id, $checkout_url);
+
+      return array(
+        'result' => 'success',
+        'redirect' => add_query_arg( 'payment_method', $this->id, $order->get_checkout_payment_url() ),
+      );
+    }
     
     return array(
         'result' => 'success',
@@ -554,5 +573,19 @@ class WC_Chip_Gateway extends WC_Payment_Gateway
     }
 
     update_option('chip_woocommerce_payment_method', $payment_method_keys);
+  }
+
+  public function before_woocommerce_pay_form($order, $order_button_text, $available_gateways) {
+    $selected_method = isset( $_GET['payment_method'] ) ? wp_unslash( $_GET['payment_method'] ) : null;
+
+    if ( $selected_method == $this->id ) {
+        
+        $url = WC()->session->get( 'chip_checkout_url_' . $order->get_id() );
+
+        if ( $url ) {
+            wp_redirect( $url );
+            exit;
+        }
+    }
   }
 }

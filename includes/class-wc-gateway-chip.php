@@ -373,6 +373,19 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
       'description' => __( 'Secret key can be obtained from CHIP Collect Dashboard >> Developers >> Keys', 'chip-for-woocommerce' ),
     );
 
+    $this->form_fields['secret_key_2'] = array(
+      'title'       => __( 'Second Secret key', 'chip-for-woocommerce' ),
+      'type'        => 'text',
+      'description' => __( 'Secret key can be obtained from CHIP Collect Dashboard (Toggle Test Data) >> Developers >> Keys', 'chip-for-woocommerce' ),
+    );
+
+    $this->form_fields['toggle_secret_key'] = array(
+      'title'   => __( 'Use Second Secret Key', 'chip-for-woocommerce' ),
+      'label'   => sprintf( '%1$s %2$s', __( 'Second Secret Key', 'chip-for-woocommerce' ), $this->method_title ),
+      'type'    => 'checkbox',
+      'default' => 'no',
+    );
+
     $this->form_fields['miscellaneous'] = array(
       'title'       => __( 'Miscellaneous', 'chip-for-woocommerce' ),
       'type'        => 'title',

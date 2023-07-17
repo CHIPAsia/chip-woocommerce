@@ -146,6 +146,10 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
     }
 
     add_action( 'woocommerce_subscription_change_payment_method_via_pay_shortcode', array( $this, 'handle_change_payment_method_shortcode' ), 10, 1 );
+
+    add_action( 'init', array( $this, 'register_script' ) );
+    add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_checkout_script' ) );
+    add_action( 'wc_ajax_chip_' . $this->id . '_update_fees', array( $this, 'update_checkout_fees_ajax' ) );
   }
 
   public function add_filters() {
@@ -505,6 +509,38 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
       'title'       => __( 'Public Key', 'chip-for-woocommerce' ),
       'type'        => 'textarea',
       'description' => sprintf( __( 'This option to set public key that are generated through CHIP Dashboard >> Webhooks page. The callback url is: <code>%s</code>', 'chip-for-woocommerce' ), $callback_url ),
+    );
+
+    $this->form_fields['processing_fee'] = array(
+      'title'       => __( 'Processing Fee', 'chip-for-woocommerce' ),
+      'type'        => 'title',
+      'description' => __( 'Options to add processing fee to total order.', 'chip-for-woocommerce' ),
+    );
+
+    $this->form_fields['fixed_charges'] = array(
+      'title'       => __( 'Fixed Charges', 'chip-for-woocommerce' ),
+      'type'        => 'checkbox',
+      'description' => __( 'Enable fixed charges.', 'chip-for-woocommerce' ),
+    );
+
+    $this->form_fields['fixed_charges_rate'] = array(
+      'title'       => __( 'Fixed Charges Rate (cents)', 'chip-for-woocommerce' ),
+      'type'        => 'number',
+      'description' => __( 'Fixed charges rate in cents. Set <code>100</code> for additional RM 1. This will only be enforced if fixed charges option is activated.', 'chip-for-woocommerce' ),
+      'default'     => '100',
+    );
+
+    $this->form_fields['percentage_charges'] = array(
+      'title'       => __( 'Percentage Charges', 'chip-for-woocommerce' ),
+      'type'        => 'checkbox',
+      'description' => __( 'Enable percentage charges.', 'chip-for-woocommerce' ),
+    );
+
+    $this->form_fields['percentage_charges_rate'] = array(
+      'title'       => __( 'Percentage Charges Rate', 'chip-for-woocommerce' ),
+      'type'        => 'number',
+      'description' => __( 'Percentage charges rate in. Set <code>100</code> for 1% charges. This will only be enforced if percentage charges option is activated. If the order total is RM 100 and the value is 1%, the total order will become RM 101.', 'chip-for-woocommerce' ),
+      'default'     => '100',
     );
 
     $this->form_fields['troubleshooting'] = array(
@@ -1623,5 +1659,56 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
     $name = preg_replace('/[^A-Za-z0-9\@\/\\\(\)\.\-\_\,\&\']\ /', '', $name);
 
     return substr( $name, 0, 128 );
+  }
+
+  public function register_script() {
+    wp_register_script(
+      'chip-' . $this->id . '-payment-gateways-checkout',
+      trailingslashit( WC_CHIP_URL ) . 'assets/js/checkout-fees.js',
+      array( 'jquery' ),
+      WC_CHIP_MODULE_VERSION,
+      true
+    );
+  }
+
+  public function enqueue_checkout_script() {
+    global $wp;
+    if ( ! is_checkout() ) {
+      return;
+    }
+    if ( is_wc_endpoint_url( 'order-pay' ) ) {
+      if ( isset( $wp->query_vars['order-pay'] ) && absint( $wp->query_vars['order-pay'] ) > 0 ) {
+        $order_id = absint( $wp->query_vars['order-pay'] ); // The order ID.
+      }
+
+      $order = new WC_Order($order_id);
+
+      $payment_method = $order->get_payment_method();
+
+      if ( '' !== get_query_var( 'order-pay' ) ) {
+        wp_localize_script(
+          'chip-' . $this->id . '-payment-gateways-checkout',
+          'chip_checkout_order_id',
+          array(
+            'order_id'       => get_query_var( 'order-pay' ),
+            'payment_method' => $payment_method,
+          )
+        );
+      }
+    }
+
+    wp_enqueue_script( 'chip-' . $this->id . '-payment-gateways-checkout' );
+    wp_localize_script(
+      'chip-' . $this->id . '-payment-gateways-checkout',
+      'chip_checkout_params',
+      array(
+        'update_payment_method_nonce' => wp_create_nonce( 'update-payment-method' ),
+        'chip_gateway_id' => $this->id
+      )
+    );
+  }
+
+  public function update_checkout_fees_ajax() {
+    
   }
 }

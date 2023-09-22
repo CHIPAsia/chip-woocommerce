@@ -116,7 +116,7 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
   }
 
   protected function init_supports() {
-    $supports = array( 'refunds', 'tokenization', 'subscriptions', 'subscription_cancellation',  'subscription_suspension',  'subscription_reactivation', 'subscription_amount_changes', 'subscription_date_changes', 'subscription_payment_method_change', 'subscription_payment_method_delayed_change', 'subscription_payment_method_change_customer', 'subscription_payment_method_change_admin', 'multiple_subscriptions' );
+    $supports = array( 'refunds', 'tokenization', 'subscriptions', 'subscription_cancellation',  'subscription_suspension',  'subscription_reactivation', 'subscription_amount_changes', 'subscription_date_changes', 'subscription_payment_method_change', 'subscription_payment_method_delayed_change', 'subscription_payment_method_change_customer', 'subscription_payment_method_change_admin', 'multiple_subscriptions', 'pre-orders' );
     $this->supports = array_merge( $this->supports, $supports );
   }
 
@@ -148,6 +148,7 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
     add_action( 'woocommerce_api_' . $this->id, array( $this, 'handle_callback' ) );
     add_action( 'woocommerce_subscription_failing_payment_method_updated_' . $this->id, array( $this, 'change_failing_payment_method' ), 10, 2 );
     add_action( 'admin_notices', array( $this, 'admin_notices' ) );
+    add_action( 'wc_pre_orders_process_pre_order_completion_payment_' . $this->id, array( $this, 'process_pre_order_payments' ) );
 
     // TODO: Delete in future release
     if ( $this->id == 'wc_gateway_chip' ) {
@@ -332,7 +333,15 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
     }
 
     if ( ( $payment['status'] == 'paid' ) OR ( $payment['status'] == 'preauthorized') AND $payment['purchase']['total_override'] == 0 ) {
-      if ( !$order->is_paid() ) {
+      if ( $this->order_contains_pre_order( $order ) AND $this->order_requires_payment_tokenization( $order )) {
+        if ( $payment['is_recurring_token'] OR !empty( $payment['recurring_token'] ) ) {
+          if ( $token = $this->store_recurring_token( $payment, $order->get_user_id() ) ) {
+            $this->add_payment_token( $order->get_id(), $token );
+          }
+        }
+        
+        WC_Pre_Orders_Order::mark_order_as_pre_ordered( $order );
+      } elseif ( !$order->is_paid() ) {
         $this->payment_complete( $order, $payment );
       }
       WC()->cart->empty_cart();
@@ -879,6 +888,42 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
     if ( !empty( $order->get_customer_note() ) ) {
       $params['purchase']['notes'] = substr( $order->get_customer_note(), 0, 10000 );
     }
+
+    // Start of logic for WooCommerce Pre-orders
+    if ( $this->order_contains_pre_order( $order ) AND $this->order_requires_payment_tokenization( $order )) {
+      foreach ( $order->get_items() as $item_id => $item ) {
+        $product = $item->get_product();
+      }
+      $params['purchase']['total_override'] = round(WC_Pre_Orders_Product::get_pre_order_fee( $product ) * 100);
+      $params['force_recurring'] = true;
+
+      if ($params['purchase']['total_override'] > 0) {
+        $params['skip_capture'] = false;
+      } else {
+        $params['skip_capture'] = true;
+      }
+
+      if ( isset( $_POST["wc-{$this->id}-payment-token"] ) AND 'new' !== $_POST["wc-{$this->id}-payment-token"] AND $params['purchase']['total_override'] == 0 ) {
+        $token_id = wc_clean( $_POST["wc-{$this->id}-payment-token"] );
+
+        if ( $token = WC_Payment_Tokens::get( $token_id ) ) {
+          if ( $token->get_user_id() !== $user_id ) {
+            return array( 'result' => 'failure' );
+          }
+        }
+        
+        WC_Pre_Orders_Order::mark_order_as_pre_ordered( $order );
+        
+        $this->add_payment_token( $order->get_id(), $token );
+				
+        return array(
+					'result'   => 'success',
+					'redirect' => $this->get_return_url( $order ),
+				);
+      }
+      
+    }
+    // End of logic for WooCommerce Pre-orders
 
     $params = apply_filters( 'wc_' . $this->id . '_purchase_params', $params, $this );
 
@@ -1934,5 +1979,121 @@ class WC_Gateway_Chip extends WC_Payment_Gateway
         }
       }
     }
+  }
+
+  public function order_contains_pre_order($order) {
+    if ( class_exists( 'WC_Pre_Orders_Order' ) ) {
+      if ( WC_Pre_Orders_Order::order_contains_pre_order( $order ) ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  public function order_requires_payment_tokenization( $order ) {
+    if ( class_exists( 'WC_Pre_Orders_Order' ) ) {
+      if ( WC_Pre_Orders_Order::order_requires_payment_tokenization( $order ) ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  public function process_pre_order_payments( $order ) {
+    if ( empty( $tokens = WC_Payment_Tokens::get_order_tokens( $order->get_id() ) ) ) {
+      $order->update_status( 'failed' );
+      $order->add_order_note( __( 'No card token available to charge.', 'chip-for-woocommerce' ) );
+      return;
+    }
+
+    $callback_url = add_query_arg( [ 'id' => $order->get_id() ], WC()->api_request_url( $this->id ) );
+    if ( defined( 'WC_CHIP_OLD_URL_SCHEME' ) AND WC_CHIP_OLD_URL_SCHEME ) {
+      $callback_url = home_url( '/?wc-api=' . get_class( $this ). '&id=' . $order->get_id() );
+    }
+
+    foreach ( $order->get_items() as $item_id => $item ) {
+      $product = $item->get_product();
+    }
+    $total_pre_order_fee = WC_Pre_Orders_Product::get_pre_order_fee( $product );
+
+    $total = $order->get_total() - $total_pre_order_fee;
+
+    $params = [
+      'success_callback' => $callback_url,
+      'send_receipt'     => $this->purchase_sr == 'yes',
+      'creator_agent'    => 'WooCommerce: ' . WC_CHIP_MODULE_VERSION,
+      'reference'        => $order->get_id(),
+      'platform'         => 'woocommerce',
+      'due'              => $this->get_due_timestamp(),
+      'brand_id'         => $this->brand_id,
+      'client_id'        => get_user_meta( $order->get_user_id(), '_' . $this->id . '_client_id_' . substr( $this->secret_key, -8, -2 ), true ),
+      'purchase' => [
+        'timezone'   => $this->purchase_tz,
+        'currency'   => $order->get_currency(),
+        'language'   => $this->get_language(),
+        'due_strict' => $this->due_strict == 'yes',
+        'total_override' => round( $total * 100 ),
+        'products'   => [],
+      ],
+    ];
+
+    $items = $order->get_items();
+
+    foreach ( $items as $item ) {
+      $price = round( $item->get_total() * 100 );
+      $qty   = $item->get_quantity();
+
+      if ( $price < 0 ) {
+        $price = 0;
+      }
+
+      $params['purchase']['products'][] = array(
+        'name'     => substr( $item->get_name(), 0, 256 ),
+        'price'    => round( $price / $qty ),
+        'quantity' => $qty
+      );
+    }
+
+    $params = apply_filters( 'wc_' . $this->id . '_purchase_params', $params, $this );
+
+    $chip    = $this->api();
+    $payment = $chip->create_payment( $params );
+
+    $order->update_meta_data( '_' . $this->id . '_purchase', $payment );
+    $order->save();
+
+    do_action( 'wc_' . $this->id . '_chip_purchase', $payment, $order->get_id() );
+
+    $token = new WC_Payment_Token_CC;
+    foreach ( $tokens as $key => $t ) {
+      if ( $t->get_gateway_id() == $this->id ) {
+        $token = $t;
+        break;
+      }
+    }
+
+    $this->get_lock( $order->get_id() );
+
+    $charge_payment = $chip->charge_payment( $payment['id'], array( 'recurring_token' => $token->get_token() ) );
+
+    $this->maybe_delete_payment_token($charge_payment, $token->get_id());
+
+    if ( is_array($charge_payment) AND array_key_exists( '__all__', $charge_payment ) ){
+      $order->update_status( 'failed' );
+      $order->add_order_note( sprintf( __( 'Automatic charge attempt failed. Details: %1$s', 'chip-for-woocommerce' ), var_export( $charge_payment['__all__'], true ) ) );
+    } elseif ( is_array($charge_payment) AND $charge_payment['status'] == 'paid' ) {
+      $this->payment_complete( $order, $charge_payment );
+      $order->add_order_note( sprintf( __( 'Payment Successful by tokenization. Transaction ID: %s', 'chip-for-woocommerce' ), $payment['id'] ) );
+    } else {
+      $order->update_status( 'failed' );
+      $order->add_order_note( __( 'Automatic charge attempt failed.', 'chip-for-woocommerce' ) );
+    }
+
+    $order->add_order_note( sprintf( __( 'Token ID: %1$s', 'chip-for-woocommerce' ), $token->get_token() ) );
+
+    $this->release_lock( $order->get_id() );
+
   }
 }

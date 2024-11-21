@@ -271,6 +271,12 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 			exit;
 		}
 
+    if ( $payment['transaction_data']['extra']['card_type'] != 'credit' ) {
+      wc_add_notice( sprintf( '%1$s %2$s', __( 'Unable to add payment method to your account.', 'chip-for-woocommerce' ), 'Debit card is not supported' ), 'error' );
+			wp_safe_redirect( wc_get_account_endpoint_url( 'payment-methods' ) );
+			exit;
+    }
+
 		$this->get_lock( $payment_id );
 
 		if ( $this->store_recurring_token( $payment, $payment['reference'] ) ) {
@@ -364,6 +370,14 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 
 			$payment = $this->api()->get_payment( $payment_id );
 		}
+
+    if ($payment['status'] == 'hold') {
+      if ($payment['transaction_data']['extra']['card_type'] == 'credit' ) {
+        $payment = $this->api()->capture_payment($payment['id']);
+      } else {
+        $payment = $this->api()->release_payment($payment['id']);
+      }
+    }
 
 		if ( ( $payment['status'] == 'paid' ) or ( $payment['status'] == 'preauthorized' ) and $payment['purchase']['total_override'] == 0 ) {
 			if ( $this->order_contains_pre_order( $order ) and $this->order_requires_payment_tokenization( $order ) ) {
@@ -986,6 +1000,11 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 		if ( is_array( $this->payment_met ) and ! empty( $this->payment_met ) ) {
 			$params['payment_method_whitelist'] = $this->payment_met;
 		}
+
+    // if payment method whitelist contains card payment method
+    if (array_intersect($params['payment_method_whitelist'], ['visa','mastercard','maestro']) ) {
+      $params['skip_capture'] = true;
+    }
 
 		if ( isset( $_POST[ "wc-{$this->id}-new-payment-method" ] ) and in_array( $_POST[ "wc-{$this->id}-new-payment-method" ], [ 'true', 1 ] ) ) {
 			$params['payment_method_whitelist'] = $this->get_payment_method_for_recurring();

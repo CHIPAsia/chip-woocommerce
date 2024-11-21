@@ -1,10 +1,10 @@
 <?php
 
 /**
- * Plugin Name: CHIP for WooCommerce
+ * Plugin Name: CHIP for WooCommerce (CC Only)
  * Plugin URI: https://wordpress.org/plugins/chip-for-woocommerce/
  * Description: CHIP - Digital Finance Platform
- * Version: 1.6.5
+ * Version: 999
  * Author: Chip In Sdn Bhd
  * Author URI: https://www.chip-in.asia
  * Requires PHP: 7.1

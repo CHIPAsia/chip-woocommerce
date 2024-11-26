@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Plugin Name: CHIP for WooCommerce (CC Only)
+ * Plugin Name: CHIP for WooCommerce (Skip Capture POC)
  * Plugin URI: https://wordpress.org/plugins/chip-for-woocommerce/
  * Description: CHIP - Digital Finance Platform
  * Version: 999

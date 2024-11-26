@@ -186,11 +186,16 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 
 		add_action( 'admin_enqueue_scripts', array( $this, 'meta_box_scripts' ) );
 		add_action( 'wp_ajax_' . $this->id . '_metabox_refresh', array( $this, 'metabox_ajax_handler' ) );
+
+    add_action( 'woocommerce_order_action_chip_capture_payment', array($this, 'capture_payment'));
+    add_action( 'woocommerce_order_action_chip_release_payment', array($this, 'release_payment'));
 	}
 
 	public function add_filters() {
 		add_filter( 'woocommerce_subscriptions_update_payment_via_pay_shortcode', array( $this, 'maybe_dont_update_payment_method' ), 10, 3 );
 		add_filter( 'woocommerce_payment_gateway_get_new_payment_method_option_html', array( $this, 'maybe_hide_add_new_payment_method' ), 10, 2 );
+
+    add_filter( 'woocommerce_order_actions', array($this, 'add_capture_and_release'), 10, 2 );
 	}
 
 	public function get_icon() {
@@ -270,12 +275,6 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 			wp_safe_redirect( wc_get_account_endpoint_url( 'payment-methods' ) );
 			exit;
 		}
-
-    if ( $payment['transaction_data']['extra']['card_type'] != 'credit' ) {
-      wc_add_notice( sprintf( '%1$s %2$s', __( 'Unable to add payment method to your account.', 'chip-for-woocommerce' ), 'Debit card is not supported' ), 'error' );
-			wp_safe_redirect( wc_get_account_endpoint_url( 'payment-methods' ) );
-			exit;
-    }
 
 		$this->get_lock( $payment_id );
 
@@ -371,15 +370,7 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 			$payment = $this->api()->get_payment( $payment_id );
 		}
 
-    if ($payment['status'] == 'hold') {
-      if ($payment['transaction_data']['extra']['card_type'] == 'credit' ) {
-        $payment = $this->api()->capture_payment($payment['id']);
-      } else {
-        $payment = $this->api()->release_payment($payment['id']);
-      }
-    }
-
-		if ( ( $payment['status'] == 'paid' ) or ( $payment['status'] == 'preauthorized' ) and $payment['purchase']['total_override'] == 0 ) {
+		if ( in_array($payment['status'], ['paid','preauthorized']) and $payment['purchase']['total_override'] == 0 ) {
 			if ( $this->order_contains_pre_order( $order ) and $this->order_requires_payment_tokenization( $order ) ) {
 				if ( $payment['is_recurring_token'] or ! empty( $payment['recurring_token'] ) ) {
 					if ( $token = $this->store_recurring_token( $payment, $order->get_user_id() ) ) {
@@ -394,7 +385,11 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 			WC()->cart->empty_cart();
 
 			$this->log_order_info( 'payment processed', $order );
-		} else {
+		} elseif ($payment['status'] == 'hold') {
+      $order->update_status(
+        'wc-on-hold'
+      );
+    } else {
 			if ( ! $order->is_paid() ) {
 				if ( ! empty( $payment['transaction_data']['attempts'] ) and ! empty( $payment_extra = $payment['transaction_data']['attempts'][0]['extra'] ) ) {
 					if ( isset( $payment_extra['payload'] ) and isset( $payment_extra['payload']['fpx_debitAuthCode'] ) ) {
@@ -2442,4 +2437,61 @@ class WC_Gateway_Chip extends WC_Payment_Gateway {
 
 		wp_die(); // All ajax handlers die when finished
 	}
+
+  public function add_capture_and_release($actions, $order) {
+    if ($order->get_payment_method() == 'wc_gateway_chip_3') {
+      $actions['chip_capture_payment'] = 'Capture Payment';
+      $actions['chip_release_payment'] = 'Release Payment';
+    }
+    return $actions;
+  }
+
+  public function capture_payment($order) {
+    if ($order->get_payment_method() != 'wc_gateway_chip_3') {
+      return;
+    }
+
+    if ($this->id != 'wc_gateway_chip_3') {
+      return;
+    }
+
+    $payment = $order->get_meta( '_' . $this->id . '_purchase', true );
+
+    if (!isset($payment['id'])) {
+      return;
+    }
+
+		$payment_id = $payment['id'];
+
+    $payment = $this->api()->capture_payment($payment_id);
+
+    if ($payment['status'] == 'paid') {
+      $this->payment_complete( $order, $payment );  
+    }
+  }
+
+  public function release_payment($order) {
+    if ($order->get_payment_method() != 'wc_gateway_chip_3') {
+      return;
+    }
+
+    if ($this->id != 'wc_gateway_chip_3') {
+      return;
+    }
+
+    $payment = $order->get_meta( '_' . $this->id . '_purchase', true );
+
+    if (!isset($payment['id'])) {
+      return;
+    }
+
+		$payment_id = $payment['id'];
+    
+    $payment = $this->api()->release_payment($payment_id);
+
+    if ($payment['status'] == 'released') {
+      $order->add_order_note( __( 'Payment has been released.', 'woocommerce' ) );
+      $order->update_status('wc-cancelled');
+    }
+  }
 }
